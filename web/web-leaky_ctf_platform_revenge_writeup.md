@@ -526,4 +526,5 @@ leakyctf{????????}
 ```
 
 After recovering it, submitting it to `/submit_flag` reveals the actual `PUCTF26{...}` flag.
+PUCTF26{Please_do_not_use_an_unintended_solution_to_solve_this_challenge_xddd_HJsy2n2QZl5RKm4oH91XM4LlQgQRs6tw}
 
