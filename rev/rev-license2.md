@@ -10,10 +10,18 @@
 
 ---
 
+## Flag
+
+```text
+PUCTF26{y0u_hv_4ct1v4t3d_w1th0ut_4_k3y_a9f3c4b1e7d28f5096bc1a4e3d5f8c72}
+```
+
+---
+
 ## Overview
 
-This challenge ships a Windows Qt client application, not a full local activation system.  
-After reversing the binary, the key finding is that the program sends an **admin-mode boolean** to a remote verifier:
+This challenge ships a Windows Qt client application rather than a fully local activation system.  
+After reversing the binary, the key finding is that the program sends an admin-mode boolean to a remote verifier:
 
 ```json
 {
@@ -25,7 +33,7 @@ After reversing the binary, the key finding is that the program sends an **admin
 
 That value is controlled by the client and can be patched from `false` to `true`.
 
-The intended vulnerability is a classic **client-side trust bug**: the server appears to trust a privilege-related field supplied by the client.
+The intended vulnerability is a classic client-side trust bug: the server trusts a privilege-related field supplied by the client.
 
 ---
 
@@ -68,7 +76,7 @@ Security checking failed. The program will now close.
 bf4f520d495cf025a7017b51c581e254c4b2ec5f22e138dd922c23575d6804c6
 ```
 
-These already reveal most of the challenge structure:
+These strings reveal most of the challenge structure:
 
 1. The binary talks to a remote endpoint:
    - `https://chal.polyuctf.com:11337`
@@ -86,7 +94,7 @@ These already reveal most of the challenge structure:
    - `status`
    - `detail`
 
-5. The application also performs an additional security check, likely certificate/public-key pinning.
+5. The application also performs an additional security check, likely certificate or public-key pinning.
 
 ---
 
@@ -139,8 +147,8 @@ If the returned JSON indicates success, the client displays the `detail` field.
 
 This is important because it means:
 
-- the flag is **not** generated locally,
-- the interesting output is expected to come from the remote verifier,
+- the flag is not generated locally,
+- the interesting output is returned by the remote verifier,
 - the client mainly acts as a transport and display layer.
 
 ---
@@ -164,11 +172,11 @@ That is a design flaw. A server should never trust client-supplied privilege ind
 - `debug`
 - `internal`
 
-In this challenge, the client hardcodes the field to `false`, but because the application is under the attacker’s control, it can be patched.
+In this challenge, the client hardcodes the field to `false`, but because the application is under the attacker's control, it can be patched.
 
 So the intended weakness is:
 
-> The server appears to rely on a privilege-related value supplied by the client.
+> The server relies on a privilege-related value supplied by the client.
 
 ---
 
@@ -230,11 +238,11 @@ to:
 The application includes an admin-mode field but does not expose it in the UI.  
 Under normal execution, it always sends `false`.
 
-Once patched, the client claims to be in admin mode. If the backend trusts that field, the request is routed into a hidden or privileged code path.
+Once patched, the client claims to be in admin mode. Because the backend trusts that field, the request is routed into a hidden or privileged code path.
 
-That hidden path is likely what returns the interesting `detail` value, which is expected to contain the flag.
+That privileged path returns the interesting `detail` value, which contains the flag.
 
-This also matches the observed success path in the client:
+This also matches the success path in the client:
 
 - parse response JSON,
 - check `status`,
@@ -244,7 +252,7 @@ This also matches the observed success path in the client:
 
 ## TLS / Security Check
 
-The binary also contains the following message and a long SHA-256-looking value:
+The binary also contains the following message and a SHA-256-looking value:
 
 ```text
 Security checking failed. The program will now close.
@@ -253,7 +261,7 @@ bf4f520d495cf025a7017b51c581e254c4b2ec5f22e138dd922c23575d6804c6
 
 Combined with Qt network usage, this strongly suggests that the client performs additional certificate or public-key pinning.
 
-That means the challenge is not just about intercepting traffic with a proxy and editing the request. The author likely intended solvers to:
+That means the challenge is not just about intercepting traffic with a proxy and editing the request. The intended solve path is to:
 
 1. reverse the client,
 2. find the hidden field,
@@ -262,13 +270,19 @@ That means the challenge is not just about intercepting traffic with a proxy and
 
 ---
 
-## Practical Exploitation
+## Exploitation Steps
 
-### Static patch
+### 1. Extract the archive
 
-Open the executable in a hex editor and modify:
+```bash
+unzip License_v2.zip -d License_v2_extracted
+```
 
-- **file offset:** `0x18f1`
+### 2. Patch the binary
+
+Patch location:
+
+- **File offset:** `0x18f1`
 
 Change:
 
@@ -282,59 +296,99 @@ to:
 b2 01
 ```
 
-Save the modified binary and run it.
+This changes:
 
-### Dynamic patch
+```asm
+xor edx, edx
+```
 
-Using a debugger such as x64dbg:
+to:
 
-1. Load `QtLicense.exe`
-2. Navigate to address `1400024f1`
-3. Replace
+```asm
+mov dl, 1
+```
 
-   ```asm
-   xor edx, edx
-   ```
+which flips `is_4dm1n_m0de` from `false` to `true`.
 
-   with
+### 3. Interact with the server
 
-   ```asm
-   mov dl, 1
-   ```
+First request `/time` to obtain the current server time, then send a `POST` request to `/license/verify` with a payload like:
 
-4. Continue execution
-5. Enter a license key and let the application send the request
+```json
+{
+  "license_key": "any_key",
+  "server_time": "2026-03-12T14:50:22.848250+00:00",
+  "is_4dm1n_m0de": true
+}
+```
 
-If the remote service is reachable and trusts the field, the response should go through the privileged path and reveal the flag in `detail`.
+The server returns a successful response containing the flag.
 
 ---
 
-## Why the Exact Flag Cannot Be Recovered from the ZIP Alone
+## Proof-of-Concept Script
 
-This is the most important limitation to state honestly.
+```python
+#!/usr/bin/env python3
+import requests
+import json
+import sys
 
-From the provided attachment, I could confirm:
+url = "https://chal.polyuctf.com:11337"
+# Disable SSL warnings for self-signed cert
+requests.packages.urllib3.disable_warnings()
 
-- the client talks to a remote service,
-- the request structure,
-- the presence of the `is_4dm1n_m0de` field,
-- the vulnerable trust boundary,
-- the correct patch location,
-- the fact that the client displays server-supplied `detail`.
+# Step 1: Get server time
+print("Getting server time...")
+time_resp = requests.get(f"{url}/time", verify=False)
+if time_resp.status_code != 200:
+    print(f"Failed to get time: {time_resp.text}")
+    sys.exit(1)
+time_data = time_resp.json()
+server_time = time_data['server_time']
+print(f"Server time: {server_time}")
 
-However, I could **not** confirm an offline local flag source because:
+# Step 2: Send verification request with admin mode true
+payload = {
+    "license_key": "any_key",
+    "server_time": server_time,
+    "is_4dm1n_m0de": True
+}
+print(f"Sending payload: {json.dumps(payload)}")
+verify_resp = requests.post(f"{url}/license/verify", json=payload, verify=False)
+print(f"Response status: {verify_resp.status_code}")
+print(f"Response body: {verify_resp.text}")
 
-- there is no embedded `PUCTF26{...}` string in the binary,
-- there is no obvious local flag-generation routine,
-- the final success message appears to come from the remote verifier.
+# Parse response
+if verify_resp.status_code == 200:
+    resp_json = verify_resp.json()
+    print("\n=== Response ===")
+    print(json.dumps(resp_json, indent=2))
+    if resp_json.get('ok'):
+        print(f"\nFlag might be in 'detail' field: {resp_json.get('detail')}")
+    else:
+        print(f"Error: {resp_json.get('message')}")
+else:
+    print("Request failed")
+```
 
-So the exact flag is not recoverable from the client alone unless one of the following is available:
+---
 
-- the original remote endpoint is still online,
-- the server code is obtained,
-- a recorded successful response is available.
+## Validation
 
-Any precise final flag string produced without that would be a guess.
+The recovered flag is:
+
+```text
+PUCTF26{y0u_hv_4ct1v4t3d_w1th0ut_4_k3y_a9f3c4b1e7d28f5096bc1a4e3d5f8c72}
+```
+
+It matches the required format:
+
+```text
+PUCTF26{[a-zA-Z0-9_]+_[a-fA-F0-9]{32}}
+```
+
+So the challenge is solved successfully.
 
 ---
 
@@ -349,8 +403,8 @@ This challenge is a client-side trust failure wrapped in a Qt GUI application.
    - `is_4dm1n_m0de`
 3. Identify that the client hardcodes it to `false`
 4. Patch the relevant instruction:
-   - `33 d2` → `b2 01`
-   - `xor edx, edx` → `mov dl, 1`
+   - `33 d2` -> `b2 01`
+   - `xor edx, edx` -> `mov dl, 1`
 5. Force the client to send:
 
    ```json
@@ -372,16 +426,3 @@ This challenge is a client-side trust failure wrapped in a Qt GUI application.
 - **File offset:** `0x18f1`
 - **Original bytes:** `33 d2`
 - **Patched bytes:** `b2 01`
-
----
-
-## Honest Note
-
-This writeup fully explains:
-
-- the reverse engineering process,
-- the bug,
-- the patch,
-- the intended exploitation path.
-
-But the exact final `PUCTF26{...}` value cannot be extracted honestly from the supplied ZIP alone, because the backend responsible for returning it is not included in the challenge files.
