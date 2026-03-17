@@ -291,7 +291,9 @@ Then `document.body.innerText` is basically raw JSON containing the flag.
 
 The final plan is:
 
-### Step 1: Register a normal user
+### Step 1: Register a normal user and Open the WebHook
+
+![webhook](./webhook.png)
 
 For example:
 
