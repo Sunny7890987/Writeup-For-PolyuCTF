@@ -488,9 +488,9 @@ That text is the admin profile JSON, so extracting the flag is straightforward.
 
 ---
 
-## 12. Important caveats
+## 12. My Mistake
 
-### 12.1 Use an HTTP attacker page, not HTTPS
+### 12.1 Use an HTTPS attacker page, not HTTP
 
 The internal app runs on:
 
@@ -502,7 +502,7 @@ An HTTPS attacker page interacting with HTTP localhost is much more likely to hi
 
 ---
 
-### 12.2 The bot only waits 5 seconds
+### 12.2 The bot only waits 5 seconds , I only attack 1 time.
 
 From the config:
 
@@ -514,29 +514,6 @@ So the exploit has to be fast. That is why the attacker page repeatedly navigate
 
 ---
 
-### 12.3 Non-admin users are cleaned periodically
-
-In `lib/db.ts`:
-
-```ts
-setInterval(cleanupDatabase, DATABASE_CLEANUP_INTERVAL_MINUTE);
-```
-
-And the cleanup logic does:
-
-```ts
-DELETE FROM users WHERE is_admin = 0
-```
-
-So you should:
-
-- Register a fresh user
-- Inject the payload
-- Report immediately
-
-Otherwise your account may be deleted before the bot visits.
-
----
 
 ## 13. Vulnerability summary
 
@@ -571,4 +548,10 @@ A concise summary of the intended chain is:
 
 > **Arbitrary JSON write + React prop spread to DOM + stored XSS + two-window session juggling = flag**
 
-This writeup reflects the source-level exploitation path and intended vulnerability chain.
+## 15. What I Learned
+
+- Open the webhook to view the request.
+- Create the GitHub Pages site to host exploit.html for the bot to visit. 
+
+--- It is my first time to do that XDDD ---
+
