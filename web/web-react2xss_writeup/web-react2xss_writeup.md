@@ -3,7 +3,7 @@
 ## Challenge Overview
 
 The challenge is a Next.js application with source code provided and an online instance.
-
+![challenge](./challenge.png)
 Flag format:
 
 ```text
@@ -164,7 +164,7 @@ window.fetch = async (url, opts = {}) => {
 
 alert('Now click Update Profile once normally');
 ```
-
+![4.](./4..png)
 Then:
 
 1. Change something trivial in the profile
@@ -178,7 +178,7 @@ If the alert pops, then we have verified:
 - **Stored XSS is real**
 
 ---
-
+![success](./succesfuling.png)
 ## 5. What the bot actually does
 
 In `lib/bot.ts`:
